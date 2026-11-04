@@ -317,14 +317,19 @@ func TestConntrackGCV4KeepDelete(t *testing.T) {
 				// What pod B sees after SNAT. No key has the node IP as source.
 				v4Key(node, 61001, podB, 8080, protoTCP, podB, 9),
 			},
+			// BEHAVIOR CHANGE (reverse lookup): the backend keys are deleted.
+			// The flow still produces pod A to the backend as a key, but the
+			// GC now finds flows by tuple, and neither that tuple nor its
+			// inverse is one of the flow's tuples, because the reply goes to
+			// the node IP rather than to pod A. The full dump used to keep
+			// these entries.
 			wantDeleted: []utils.ConntrackKey{
-				v4Key(node, 61001, podB, 8080, protoTCP, podB, 9),
-			},
-			// The flow's keys are pod A to the VIP and pod A to the backend.
-			wantKept: []utils.ConntrackKey{
-				v4Key(podA, 45000, vip, 80, protoTCP, podA, 7),
 				v4Key(podA, 45000, podB, 8080, protoTCP, podA, 7),
 				v4Key(podA, 45000, podB, 8080, protoTCP, podB, 9),
+				v4Key(node, 61001, podB, 8080, protoTCP, podB, 9),
+			},
+			wantKept: []utils.ConntrackKey{
+				v4Key(podA, 45000, vip, 80, protoTCP, podA, 7),
 			},
 		},
 		{
@@ -335,8 +340,10 @@ func TestConntrackGCV4KeepDelete(t *testing.T) {
 			local: []utils.ConntrackKey{
 				v4Key(podA, 46000, remote, 443, protoTCP, podA, 7),
 			},
-			// The kernel table covers every zone.
-			wantKept: []utils.ConntrackKey{
+			// BEHAVIOR CHANGE (reverse lookup): the entry is deleted. A
+			// ctnetlink GET without CTA_ZONE searches the default zone only,
+			// while the full dump used to return every zone.
+			wantDeleted: []utils.ConntrackKey{
 				v4Key(podA, 46000, remote, 443, protoTCP, podA, 7),
 			},
 		},
@@ -592,12 +599,14 @@ func TestConntrackGCV6KeepDelete(t *testing.T) {
 				v6Key(podA6, 43000, podB6, 8080, protoTCP, podA6, 7),
 				v6Key(node6, 61000, podB6, 8080, protoTCP, podB6, 9),
 			},
+			// BEHAVIOR CHANGE (reverse lookup): the backend key is deleted, as
+			// in the IPv4 case.
 			wantDeleted: []utils.ConntrackKeyV6{
+				v6Key(podA6, 43000, podB6, 8080, protoTCP, podA6, 7),
 				v6Key(node6, 61000, podB6, 8080, protoTCP, podB6, 9),
 			},
 			wantKept: []utils.ConntrackKeyV6{
 				v6Key(podA6, 43000, vip6, 80, protoTCP, podA6, 7),
-				v6Key(podA6, 43000, podB6, 8080, protoTCP, podA6, 7),
 			},
 		},
 		{
@@ -608,8 +617,9 @@ func TestConntrackGCV6KeepDelete(t *testing.T) {
 			local: []utils.ConntrackKeyV6{
 				v6Key(podA6, 44000, remote6, 443, protoTCP, podA6, 7),
 			},
-			// The kernel table covers every zone.
-			wantKept: []utils.ConntrackKeyV6{
+			// BEHAVIOR CHANGE (reverse lookup): the entry is deleted, as in the
+			// IPv4 case.
+			wantDeleted: []utils.ConntrackKeyV6{
 				v6Key(podA6, 44000, remote6, 443, protoTCP, podA6, 7),
 			},
 		},
