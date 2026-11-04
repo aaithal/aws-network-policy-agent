@@ -333,7 +333,7 @@ func TestConntrackGCV4KeepDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "flow in a non-default conntrack zone",
+			name: "flow in a non-default conntrack zone: deleted, per the fake kernel's GET (real kernel: TestNetlinkFlowLookupKernel)",
 			flows: []*netlink.ConntrackFlow{
 				inZone(testFlow(false, protoTCP, podA, 46000, remote, 443, remote, 443), 5),
 			},
@@ -343,6 +343,8 @@ func TestConntrackGCV4KeepDelete(t *testing.T) {
 			// BEHAVIOR CHANGE (reverse lookup): the entry is deleted. A
 			// ctnetlink GET without CTA_ZONE searches the default zone only,
 			// while the full dump used to return every zone.
+			// fakeKernel models that GET; TestNetlinkFlowLookupKernel checks it
+			// against a real kernel.
 			wantDeleted: []utils.ConntrackKey{
 				v4Key(podA, 46000, remote, 443, protoTCP, podA, 7),
 			},
@@ -610,7 +612,7 @@ func TestConntrackGCV6KeepDelete(t *testing.T) {
 			},
 		},
 		{
-			name: "flow in a non-default conntrack zone",
+			name: "flow in a non-default conntrack zone: deleted, per the fake kernel's GET (real kernel: TestNetlinkFlowLookupKernel)",
 			flows: []*netlink.ConntrackFlow{
 				inZone(testFlow(true, protoTCP, podA6, 44000, remote6, 443, remote6, 443), 5),
 			},
