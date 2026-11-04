@@ -275,10 +275,10 @@ func (c *conntrackClient) deleteV6MapEntry(key utils.ConntrackKeyV6) {
 // removeStaleV4Entries deletes the entries in localConntrackV4Cache that no
 // kernel conntrack flow matches and that isActive does not report as touched
 // since gcStart, and returns how many it deleted. An entry is live if a flow
-// produces its key under the rule on v4FlowKeys. TCP and UDP entries are looked
-// up one at a time (entryHasFlow), and port-less entries such as ICMP are
-// matched against one dump per protocol (matchedByDump), so memory does not
-// grow with the kernel table. If a lookup fails other than with "no such
+// produces its key under the rule on forEachFlowKey. TCP and UDP entries are
+// looked up one at a time (entryHasFlow), and port-less entries such as ICMP
+// are matched against one dump per protocol (matchedByDump), so memory does
+// not grow with the kernel table. If a lookup fails other than with "no such
 // flow", or a dump fails or is interrupted, it deletes nothing and returns the
 // error.
 func (c *conntrackClient) removeStaleV4Entries(gcStart uint64, isActive func(key utils.ConntrackKey, gcStart uint64) bool,
@@ -382,8 +382,8 @@ func v4LookupKey(entry utils.ConntrackKey) utils.ConntrackKey {
 // matched by a dump, and reports whether a kernel flow matches it and how many
 // lookups it sent. An entry of a protocol other than TCP and UDP gets here only
 // with a non-zero port. Flows of those protocols have zero ports (see
-// v4FlowKeys), so it matches nothing and is stale without a lookup. flow is
-// scratch space for the lookups.
+// forEachFlowKey), so it matches nothing and is stale without a lookup. flow
+// is scratch space for the lookups.
 func v4EntryHasFlow(ctLookup flowLookup, key utils.ConntrackKey, flow *netlink.ConntrackFlow) (bool, int, error) {
 	if !portsCompared(key.Protocol) {
 		return false, 0, nil
@@ -395,7 +395,7 @@ func v4EntryHasFlow(ctLookup flowLookup, key utils.ConntrackKey, flow *netlink.C
 }
 
 // v4FlowHasKey reports whether conntrackFlow produces key under the rule on
-// v4FlowKeys.
+// forEachFlowKey.
 func v4FlowHasKey(conntrackFlow *netlink.ConntrackFlow, key utils.ConntrackKey) bool {
 	found := false
 	v4FlowKeys(conntrackFlow, func(flowKey utils.ConntrackKey) {
@@ -406,57 +406,20 @@ func v4FlowHasKey(conntrackFlow *netlink.ConntrackFlow, key utils.ConntrackKey) 
 	return found
 }
 
-// v4FlowKeys calls fn with each key conntrackFlow produces. An entry is live
-// if some kernel flow produces its key. For a flow with original tuple
-// src:sport -> dst:dport and reply tuple rsrc:rsport -> rdst:rdport, the keys
-// are:
-//
-//   - src:sport -> dst:dport, owned by src or by dst.
-//   - If dst != rsrc (the destination was DNAT'd, for example a service VIP to a
-//     backend pod): src:sport -> rsrc:rsport, owned by src or by rsrc.
-//
-// The dst != rsrc test compares IPs only. Ifindex is ignored because kernel
-// conntrack has no per-veth ifindex. Ports are compared for TCP and UDP only,
-// because netlink reports them as zero for other protocols.
+// v4FlowKeys calls fn with each key conntrackFlow produces under the rule on
+// forEachFlowKey, in IPv4 key form.
 func v4FlowKeys(conntrackFlow *netlink.ConntrackFlow, fn func(key utils.ConntrackKey)) {
-	//Check fwd flow with SIP as owner
-	fwdFlowWithSIP := utils.ConntrackKey{}
-	fwdFlowWithSIP.Source_ip = utils.ConvIPv4ToInt(conntrackFlow.Forward.SrcIP)
-	fwdFlowWithSIP.Source_port = conntrackFlow.Forward.SrcPort
-	fwdFlowWithSIP.Dest_ip = utils.ConvIPv4ToInt(conntrackFlow.Forward.DstIP)
-	fwdFlowWithSIP.Dest_port = conntrackFlow.Forward.DstPort
-	fwdFlowWithSIP.Protocol = conntrackFlow.Forward.Protocol
-	fwdFlowWithSIP.Owner_ip = fwdFlowWithSIP.Source_ip
-	fwdFlowWithSIP.Ifindex = 0 // not available from netlink
-	fn(fwdFlowWithSIP)
-
-	//Check fwd flow with DIP as owner
-	fwdFlowWithDIP := fwdFlowWithSIP
-	fwdFlowWithDIP.Owner_ip = fwdFlowWithDIP.Dest_ip
-	fn(fwdFlowWithDIP)
-
-	//Dest can be VIP and pods can be on same node
-	destIP := net.ParseIP(conntrackFlow.Forward.DstIP.String())
-	revDestIP := net.ParseIP(conntrackFlow.Reverse.SrcIP.String())
-	if destIP.Equal(revDestIP) {
-		return
-	}
-
-	//Check rev flow with SIP as owner
-	revFlowWithSIP := utils.ConntrackKey{}
-	revFlowWithSIP.Source_ip = utils.ConvIPv4ToInt(conntrackFlow.Forward.SrcIP)
-	revFlowWithSIP.Source_port = conntrackFlow.Forward.SrcPort
-	revFlowWithSIP.Dest_ip = utils.ConvIPv4ToInt(conntrackFlow.Reverse.SrcIP)
-	revFlowWithSIP.Dest_port = conntrackFlow.Reverse.SrcPort
-	revFlowWithSIP.Protocol = conntrackFlow.Forward.Protocol
-	revFlowWithSIP.Owner_ip = revFlowWithSIP.Source_ip
-	revFlowWithSIP.Ifindex = 0 // not available from netlink
-	fn(revFlowWithSIP)
-
-	//Check rev flow with DIP as owner
-	revFlowWithDIP := revFlowWithSIP
-	revFlowWithDIP.Owner_ip = revFlowWithDIP.Dest_ip
-	fn(revFlowWithDIP)
+	forEachFlowKey(conntrackFlow, func(srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, protocol uint8, ownerIP net.IP) {
+		fn(utils.ConntrackKey{
+			Source_ip:   utils.ConvIPv4ToInt(srcIP),
+			Source_port: srcPort,
+			Dest_ip:     utils.ConvIPv4ToInt(dstIP),
+			Dest_port:   dstPort,
+			Protocol:    protocol,
+			Owner_ip:    utils.ConvIPv4ToInt(ownerIP),
+			Ifindex:     0, // not available from netlink
+		})
+	})
 }
 
 // removeStaleV6Entries is the IPv6 counterpart of removeStaleV4Entries for
@@ -564,52 +527,53 @@ func v6FlowHasKey(conntrackFlow *netlink.ConntrackFlow, key utils.ConntrackKeyV6
 
 // v6FlowKeys is the IPv6 counterpart of v4FlowKeys.
 func v6FlowKeys(conntrackFlow *netlink.ConntrackFlow, fn func(key utils.ConntrackKeyV6)) {
-	//Check fwd flow with SIP as owner
-	fwdFlowWithSIP := utils.ConntrackKeyV6{}
-	sip := utils.ConvIPv6ToByte(conntrackFlow.Forward.SrcIP)
-	copy(fwdFlowWithSIP.Source_ip[:], sip)
-	fwdFlowWithSIP.Source_port = conntrackFlow.Forward.SrcPort
-	dip := utils.ConvIPv6ToByte(conntrackFlow.Forward.DstIP)
-	copy(fwdFlowWithSIP.Dest_ip[:], dip)
-	fwdFlowWithSIP.Dest_port = conntrackFlow.Forward.DstPort
-	fwdFlowWithSIP.Protocol = conntrackFlow.Forward.Protocol
-	copy(fwdFlowWithSIP.Owner_ip[:], sip)
-	fwdFlowWithSIP.Ifindex = 0 // not available from netlink
-	fn(fwdFlowWithSIP)
+	forEachFlowKey(conntrackFlow, func(srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, protocol uint8, ownerIP net.IP) {
+		key := utils.ConntrackKeyV6{
+			Source_port: srcPort,
+			Dest_port:   dstPort,
+			Protocol:    protocol,
+			Ifindex:     0, // not available from netlink
+		}
+		copy(key.Source_ip[:], utils.ConvIPv6ToByte(srcIP))
+		copy(key.Dest_ip[:], utils.ConvIPv6ToByte(dstIP))
+		copy(key.Owner_ip[:], utils.ConvIPv6ToByte(ownerIP))
+		fn(key)
+	})
+}
 
-	//Check fwd flow with DIP as owner
-	fwdFlowWithDIP := fwdFlowWithSIP
-	fwdFlowWithDIP.Owner_ip = [16]byte{}
-	copy(fwdFlowWithDIP.Owner_ip[:], dip)
-	fn(fwdFlowWithDIP)
+// forEachFlowKey calls fn with the 5-tuple and owner of each key conntrackFlow
+// produces, for either family. An entry is live if some kernel flow produces
+// its key. For a flow with original tuple src:sport -> dst:dport and reply
+// tuple rsrc:rsport -> rdst:rdport, the keys are:
+//
+//   - src:sport -> dst:dport, owned by src or by dst.
+//   - If dst != rsrc (the destination was DNAT'd, for example a service VIP to a
+//     backend pod): src:sport -> rsrc:rsport, owned by src or by rsrc.
+//
+// The dst != rsrc test compares IPs only. Ifindex is ignored because kernel
+// conntrack has no per-veth ifindex. Ports are compared for TCP and UDP only,
+// because netlink reports them as zero for other protocols.
+func forEachFlowKey(conntrackFlow *netlink.ConntrackFlow,
+	fn func(srcIP net.IP, srcPort uint16, dstIP net.IP, dstPort uint16, protocol uint8, ownerIP net.IP)) {
+	fwd := conntrackFlow.Forward
+	// src:sport -> dst:dport, owned by src and by dst.
+	fn(fwd.SrcIP, fwd.SrcPort, fwd.DstIP, fwd.DstPort, fwd.Protocol, fwd.SrcIP)
+	fn(fwd.SrcIP, fwd.SrcPort, fwd.DstIP, fwd.DstPort, fwd.Protocol, fwd.DstIP)
 
-	//Dest can be VIP and pods can be on same node
-	destIP := net.ParseIP(conntrackFlow.Forward.DstIP.String())
+	// Dest can be VIP and pods can be on same node
+	destIP := net.ParseIP(fwd.DstIP.String())
 	revDestIP := net.ParseIP(conntrackFlow.Reverse.SrcIP.String())
 	if destIP.Equal(revDestIP) {
 		return
 	}
 
-	//Check rev flow with SIP as owner
-	revFlowWithSIP := utils.ConntrackKeyV6{}
-	copy(revFlowWithSIP.Source_ip[:], sip)
-	revFlowWithSIP.Source_port = conntrackFlow.Forward.SrcPort
-	revDip := utils.ConvIPv6ToByte(conntrackFlow.Reverse.SrcIP)
-	copy(revFlowWithSIP.Dest_ip[:], revDip)
-	revFlowWithSIP.Dest_port = conntrackFlow.Reverse.SrcPort
-	revFlowWithSIP.Protocol = conntrackFlow.Forward.Protocol
-	copy(revFlowWithSIP.Owner_ip[:], sip)
-	revFlowWithSIP.Ifindex = 0 // not available from netlink
-	fn(revFlowWithSIP)
-
-	//Check rev flow with DIP as owner
-	revFlowWithDIP := revFlowWithSIP
-	revFlowWithDIP.Owner_ip = [16]byte{}
-	copy(revFlowWithDIP.Owner_ip[:], revDip)
-	fn(revFlowWithDIP)
+	// src:sport -> rsrc:rsport, owned by src and by rsrc.
+	rev := conntrackFlow.Reverse
+	fn(fwd.SrcIP, fwd.SrcPort, rev.SrcIP, rev.SrcPort, fwd.Protocol, fwd.SrcIP)
+	fn(fwd.SrcIP, fwd.SrcPort, rev.SrcIP, rev.SrcPort, fwd.Protocol, rev.SrcIP)
 }
 
-// portsCompared reports whether the rule on v4FlowKeys compares ports for
+// portsCompared reports whether the rule on forEachFlowKey compares ports for
 // protocol.
 func portsCompared(protocol uint8) bool {
 	return protocol == unix.IPPROTO_TCP || protocol == unix.IPPROTO_UDP
@@ -632,7 +596,7 @@ func matchedByDump(protocol uint8, srcPort, dstPort uint16) bool {
 // original or its reply tuple, and a tuple belongs to at most one flow per zone:
 //
 //  1. GET src:sport -> dst:dport. This finds the flow whose original tuple is
-//     the entry's 5-tuple, which covers the first key on v4FlowKeys.
+//     the entry's 5-tuple, which covers the first key on forEachFlowKey.
 //  2. If 1 did not match, GET the inverse, dst:dport -> src:sport. This finds a
 //     DNAT'd flow whose reply tuple is rsrc:rsport -> src:sport, which covers
 //     the second key.
