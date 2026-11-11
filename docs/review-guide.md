@@ -113,6 +113,7 @@ Items marked "(unverified)" or "(inferred)" rest on reasoning, or on kernel or K
 **Tests and CI**
 
 - [advisory] Is the test in a suite that CI actually runs, including the nightly kernel workflow for eBPF changes? [P11](#p-tests)
+- [advisory] Does a suite that changes aws-node run late, after the suites that expect the stock agent and before `strict`, and restore what it changed even if the script stops mid-suite? [P11](#p-tests)
 - [advisory] Is there a privileged test that loads the built ELF, for C changes that only fail at load time? [C16](#c16)
 - [advisory] Is a feature gate tested on both sides of the gate, given that CI nodes are AL2023 only? [P9](#p-gate)
 - [advisory] Do test pods that need separate programs have names that differ before the last `-`, and no `.`? [P12](#p-podid)
@@ -689,10 +690,11 @@ Integration suites live in `test/integration/<suite>/`, one ginkgo suite per dir
 | `ebpf` | yes when `RUN_EBPF_TESTS=true`, the default (`:120-123`) | yes (`:39`) |
 | `clusternetworkpolicy` | yes (`:125-127`) | no |
 | `restart` | only if `RUN_RESTART_TESTS=true`; default false, no workflow sets it (`:129-131`) | no |
+| `agentflags` | yes when `RUN_AGENT_FLAGS_TESTS=true`, the default, after `restart` and before `strict` (`run_agent_flags_suite`, added in #782) | yes, before `strict` (`run_agent_flags_suite`, added in #782) |
 | `strict` | yes, last (`:133-139`) | yes, last (`:41-43`) |
 | `leak`, `upgrade`, `soak/port-reuse` | not run by any script or workflow | no |
 
-All legs run on IPv4 and IPv6. The nightly kernel workflow (`.github/workflows/nightly-kernel-tests.yaml`) runs daily on AL2023 kernel lines and runs `policy`, `ebpf`, then `strict`. #704 added `ebpf` to it. A test in a suite the nightly script does not run needs `run-kernel-smoke-tests.sh` extended ([Theme 16](#themes)). The strict suite mutates aws-node, so it must stay last. Restart tests assume default allow, so they run before it ([#706](https://github.com/aws/aws-network-policy-agent/pull/706#issuecomment-6227325153)). Shared helpers are in `test/framework` (`BuildBPFCheckPod`, `ParseLoadedEBPFData` in `test/framework/utils/bpf.go`).
+All legs run on IPv4 and IPv6. The nightly kernel workflow (`.github/workflows/nightly-kernel-tests.yaml`) runs daily on AL2023 kernel lines and runs `policy`, `ebpf`, `agentflags`, then `strict`. #704 added `ebpf` to it, and #782 added `agentflags`. A test in a suite the nightly script does not run needs `run-kernel-smoke-tests.sh` extended ([Theme 16](#themes)). The strict suite mutates aws-node, so it must stay last. Restart tests assume default allow, so they run before it ([#706](https://github.com/aws/aws-network-policy-agent/pull/706#issuecomment-6227325153)). Suites that change aws-node run late, in isolation, with a restore. The `agentflags` specs change the agent's args, so the suite runs after the suites that expect the stock agent and before `strict`. `run_agent_flags_suite` in `scripts/lib/tests.sh` (added in #782) saves the args first and restores them after the suite, or from an `EXIT` trap if the script stops mid-suite. Without the restore, a run killed or timed out mid-suite would leave a flag on for `strict`. Shared helpers are in `test/framework` (`BuildBPFCheckPod`, `ParseLoadedEBPFData` in `test/framework/utils/bpf.go`).
 
 **Specs that need an SDK change.** If a spec passes only with an SDK change that `go.mod` doesn't pin yet, it merges in the same PR as the SDK bump, or after it. The PR description names the SDK change and the release it needs. `/test cyclonus` builds the agent image from the PR head (`.github/workflows/pr-cyclonus-tests.yaml:97-109`), so the `go.mod` pin decides which SDK runs. The workflow runs only on an issue comment (`pr-cyclonus-tests.yaml:3-5`). The `ebpf` suite runs by default in that job (`scripts/run-cyclonus-tests.sh:42`, `:120-123`). A spec merged ahead of its SDK fix fails wherever its suite runs: the nightly kernel run fails it on both families (see the example below). The same `ebpf` suite runs in `/test cyclonus`, so it is expected to fail there too (inferred: no `/test cyclonus` has run on a PR head that includes such a spec).
 
