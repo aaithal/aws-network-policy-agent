@@ -138,6 +138,12 @@ struct bpf_map_def_pvt SEC("maps") egress_pod_state_map = {
 
 struct bpf_map_def_pvt aws_conntrack_map;
 struct bpf_map_def_pvt policy_events;
+// tc.shared.bpf.o's maps, declared without a definition so the loader links
+// them to the agent's pinned copies instead of creating new ones.
+struct bpf_map_def_pvt aws_tc_config;
+struct bpf_map_def_pvt aws_tcp_reset_pending;
+
+#include "rst_on_deny.h"
 
 static __always_inline int evaluateClusterPolicyByLookUp(struct keystruct trie_key, struct conntrack_key flow_key, __u32 *admin_tier_priority, __u8 *baseline_tier_action, __u32 *baseline_tier_priority) {
 
@@ -385,6 +391,13 @@ int handle_egress(struct __sk_buff *skb)
 				}
 				l4_src_port = (((((unsigned short)(l4_tcp_hdr->source) & 0xFF)) << 8) | (((unsigned short)(l4_tcp_hdr->source) & 0xFF00) >> 8));
 				l4_dst_port = (((((unsigned short)(l4_tcp_hdr->dest) & 0xFF)) << 8) | (((unsigned short)(l4_tcp_hdr->dest) & 0xFF00) >> 8));
+				// The ingress program's RST for a denied SYN passes
+				// unevaluated. Recorded as a flow, it would let the client's
+				// next SYN in as a reply; denied, it would never arrive.
+				if (l4_tcp_hdr->rst &&
+				    is_pending_reset_v6(skb, &ip->saddr, &ip->daddr, l4_tcp_hdr->source, l4_tcp_hdr->dest)) {
+					return BPF_OK;
+				}
 				break;
 			case IPPROTO_UDP:
 				if (data + sizeof(*ip) + sizeof(*l4_udp_hdr) > data_end) {
